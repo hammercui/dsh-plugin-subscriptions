@@ -4,3 +4,9 @@ lib-test/
 *.tgz
 overlay.yml
 .DS_Store
+
+# Local test output and private runtime data must never be committed.
+output/
+*.log
+auth.json
+.dsh/
