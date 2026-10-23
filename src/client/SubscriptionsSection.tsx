@@ -34,7 +34,7 @@ const POLL_INTERVAL_MS = 2000
 const MODEL_FILTER_THRESHOLD = 8
 
 /** Subscription provider ids, fixed by the node half's OAuth adapters. */
-export type SubscriptionProvider = 'codex' | 'claude' | 'grok' | 'copilot' | 'antigravity'
+export type SubscriptionProvider = 'codex' | 'claude' | 'grok' | 'copilot' | 'antigravity' | 'zhipu' | 'aliyun'
 
 /** One logged-in account as answered by the `status` endpoint. */
 export interface AccountStatus {
@@ -149,7 +149,60 @@ const PROVIDERS: readonly { id: SubscriptionProvider; name: string }[] = [
   { id: 'grok', name: 'Grok (X Premium)' },
   { id: 'copilot', name: 'GitHub Copilot' },
   { id: 'antigravity', name: 'Google Antigravity' },
+  { id: 'zhipu', name: '智谱 Coding Plan (CN)' },
+  { id: 'aliyun', name: 'Alibaba Coding Plan' },
 ]
+
+export function isCodingPlan(provider: SubscriptionProvider): boolean {
+  return provider === 'zhipu' || provider === 'aliyun'
+}
+
+/** Dedicated China Coding Plan routes; never user-supplied API destinations. */
+export const CODING_PLAN_ENDPOINTS = {
+  zhipu: 'https://open.bigmodel.cn/api/coding/paas/v4',
+  aliyun: 'https://coding.dashscope.aliyuncs.com/v1',
+} as const
+
+/** Inline, ephemeral credential draft. Saved keys never enter this component. */
+export function CodingPlanKeyForm({ provider, rpc, t, onSaved }: {
+  provider: SubscriptionProvider; rpc: ConnectionHandle['rpc'];
+  t: SubscriptionsSectionInjected['t']; onSaved: () => Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [account, setAccount] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const lock = useRef(false)
+  function clear() { setAccount(''); setApiKey(''); setError(''); setOpen(false) }
+  async function save() {
+    if (lock.current || !account.trim() || !apiKey.trim()) return
+    lock.current = true; setSaving(true); setError('')
+    try {
+      const result = await callSubscriptionsAuth<{ saved: true }>(rpc, 'saveApiKey', { provider, account: account.trim(), apiKey: apiKey.trim() })
+      if (result.saved !== true) throw new Error(t('apiKeySaveFailed'))
+      clear()
+      await onSaved()
+    } catch {
+      // Never reflect transport messages, which might contain a submitted secret.
+      setError(t('apiKeySaveFailed'))
+    } finally { lock.current = false; setSaving(false) }
+  }
+  if (!open) return <button type="button" onClick={() => setOpen(true)}>{t('apiKeyAdd')}</button>
+  return <form style={{ display: 'grid', gap: 8, width: '100%' }}
+    onSubmit={event => { event.preventDefault(); void save() }}>
+    <label style={styles.proxyField}>{t('apiKeyAccount')}<input required maxLength={80} value={account}
+      disabled={saving} autoComplete="off" onChange={event => setAccount(event.target.value)} /></label>
+    <label style={styles.proxyField}>{t('apiKeyDedicated')}<input type="password" required value={apiKey}
+      disabled={saving} autoComplete="new-password" spellCheck={false}
+      onChange={event => setApiKey(event.target.value)} /></label>
+    {error && <p role="alert" style={styles.errorLine}>{error}</p>}
+    <div style={styles.actions}>
+      <button type="submit" disabled={saving || !account.trim() || !apiKey.trim()}>{t(saving ? 'modelDefaultsSaving' : 'proxySave')}</button>
+      <button type="button" disabled={saving} onClick={clear}>{t('cancel')}</button>
+    </div>
+  </form>
+}
 
 /** Human text of an action failure, SubscriptionsAuthError or not. */
 function messageOf(error: unknown): string {
@@ -458,7 +511,7 @@ export function SubscriptionsSection(props: SubscriptionsSectionProps) {
   const [statuses, setStatuses] = useState<Partial<Record<SubscriptionProvider, ProviderStatus>>>({})
   const [errors, setErrors] = useState<Partial<Record<SubscriptionProvider, string>>>({})
   const [manualDrafts, setManualDrafts] = useState<Record<SubscriptionProvider, string>>({
-    codex: '', claude: '', grok: '', copilot: '', antigravity: '',
+    codex: '', claude: '', grok: '', copilot: '', antigravity: '', zhipu: '', aliyun: '',
   })
   /** Pending device-flow codes (copilot), shown while the attempt polls. */
   const [deviceCodes, setDeviceCodes] = useState<Partial<Record<SubscriptionProvider, { userCode: string; verificationUrl: string }>>>({})
@@ -536,7 +589,7 @@ export function SubscriptionsSection(props: SubscriptionsSectionProps) {
     for (const { id } of PROVIDERS) setProviderError(id, undefined)
     for (const { id } of PROVIDERS) {
       const status = response.providers[id]
-      if (status.accounts.length > 0 || !status.busy) {
+      if (status === undefined || status.accounts.length > 0 || !status.busy) {
         stopPolling(id)
         // The attempt settled (success, timeout, or cancel): drop the code card.
         setDeviceCodes((prev) => {
@@ -849,7 +902,8 @@ export function SubscriptionsSection(props: SubscriptionsSectionProps) {
       <div style={styles.separator} />
       {PROVIDERS.map(({ id, name }) => {
         const status = statuses[id]
-        const busy = status?.busy === true
+        const codingPlan = isCodingPlan(id)
+        const busy = !codingPlan && status?.busy === true
         const deviceCode = deviceCodes[id]
         const accounts = status?.accounts ?? []
         return (
@@ -864,6 +918,8 @@ export function SubscriptionsSection(props: SubscriptionsSectionProps) {
             {status?.detail !== undefined && status.detail !== '' && (
               <p style={styles.statusLine}>{status.detail}</p>
             )}
+            {codingPlan && <><p style={styles.statusLine}>{t('codingPlanHint')}</p>
+              <p style={{ ...styles.statusLine, overflowWrap: 'anywhere' }}>{t('codingPlanEndpoint', { endpoint: CODING_PLAN_ENDPOINTS[id as keyof typeof CODING_PLAN_ENDPOINTS] })}</p></>}
             {errors[id] !== undefined && <p style={styles.errorLine}>{errors[id]}</p>}
             {accounts.map((account) => {
               const usageKey = `${id}:${account.key}`
@@ -875,8 +931,7 @@ export function SubscriptionsSection(props: SubscriptionsSectionProps) {
               const resetBlock = usage ? resetActionBlock(usage) : 'resetUseRefresh'
               const resetDisabled = resetBusy || resetBlock !== undefined
               // Providers without a usage endpoint answer supported:false — no block.
-              const showUsage = usage?.supported !== false
-                && (usage !== undefined || usageError !== undefined || usageLoading[usageKey] === true)
+              const showUsage = usage !== undefined || usageError !== undefined || usageLoading[usageKey] === true
               return (
                 <div key={account.key} style={styles.accountRow}>
                   <div style={styles.accountHeader}>
@@ -929,10 +984,12 @@ export function SubscriptionsSection(props: SubscriptionsSectionProps) {
                       {usageError !== undefined && (
                         <p style={styles.errorLine}>{t('usageError', { message: usageError })}</p>
                       )}
-                      {usage?.windows !== undefined && usage.windows.length === 0 && (
+                      {usage?.supported === false && <p style={styles.statusLine}>{t('usageUnavailable')}</p>}
+                      {codingPlan && <a style={{ color: 'var(--dsw-alias-label-primary)', textUnderlineOffset: '3px', fontSize: 12 }} href={id === 'zhipu' ? 'https://www.bigmodel.cn/coding-plan/personal/usage' : 'https://bailian.console.aliyun.com/cn-beijing/subscription/coding-plan'} target="_blank" rel="noopener noreferrer">{t('codingPlanDashboard')}</a>}
+                      {usage?.supported !== false && usage?.windows !== undefined && usage.windows.length === 0 && (
                         <p style={styles.statusLine}>{t('usageEmpty')}</p>
                       )}
-                      {(usage?.windows ?? []).map((window, index) => {
+                      {(usage?.supported === false ? [] : usage?.windows ?? []).map((window, index) => {
                         const percent = Math.min(100, Math.max(0, window.usedPercent))
                         return (
                           <div key={index} style={styles.usageRow}>
@@ -994,7 +1051,8 @@ export function SubscriptionsSection(props: SubscriptionsSectionProps) {
               )
             })}
             <div style={styles.actions}>
-              {!busy && accounts.length === 0 && (
+              {codingPlan && <CodingPlanKeyForm provider={id} rpc={rpc} t={t} onSaved={refresh} />}
+              {!codingPlan && !busy && accounts.length === 0 && (
                 <button type="button" onClick={() => { void login(id) }}>
                   {t('login')}
                 </button>
@@ -1009,7 +1067,7 @@ export function SubscriptionsSection(props: SubscriptionsSectionProps) {
                   </button>
                 </>
               )}
-              {!busy && accounts.length > 0 && id !== 'claude' && (
+              {!codingPlan && !busy && accounts.length > 0 && id !== 'claude' && (
                 <button type="button" onClick={() => { void login(id) }}>
                   {t('addAccount')}
                 </button>
@@ -1026,7 +1084,7 @@ export function SubscriptionsSection(props: SubscriptionsSectionProps) {
                 </button>
               )}
             </div>
-            {!busy && accounts.length > 0 && (
+            {!codingPlan && !busy && accounts.length > 0 && (
               <p style={styles.statusLine}>{t('addAccountHint')}</p>
             )}
 

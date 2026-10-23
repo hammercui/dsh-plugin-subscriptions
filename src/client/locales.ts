@@ -2,6 +2,14 @@
 
 /** English strings (the key-set source of truth for this pair). */
 export const en = {
+  apiKeyAdd: 'Add API Key account',
+  apiKeyAccount: 'Account label (required)',
+  apiKeyDedicated: 'Dedicated Coding Plan API Key',
+  apiKeySaveFailed: 'Could not save the API Key. Check the account label and dedicated Coding Plan key, then retry.',
+  codingPlanHint: 'Use a dedicated Coding Plan API Key, not a general API key. Use the default account or an independent model entry to switch manually; automatic account pooling is not available. Add only accounts you own or are authorized to use. Saving stores the key but does not validate it with the provider. This integration does not imply provider approval of DSH.',
+  codingPlanEndpoint: 'Fixed China endpoint: {endpoint}',
+  codingPlanDashboard: 'View usage in provider dashboard',
+  usageUnavailable: 'Quota unavailable — the provider does not expose supported usage data here.',
   accountsManage: 'Manage',
   accountsTitle: 'Manage {provider}',
   subscriptionDisplayName: 'Subscription display name',
@@ -52,7 +60,7 @@ export const en = {
   modelsUnavailable: "Currently unavailable",
 
   nav: 'Subscriptions',
-  intro: 'Log a subscription provider in or out. Login opens the provider’s authorization page in a new tab; headless setups can paste the callback URL or code instead.',
+  intro: 'Manage subscription accounts. Browser login opens the provider’s authorization page; Coding Plans use a dedicated API Key instead.',
   unavailable: 'Connection unavailable; subscription status cannot be loaded.',
   checking: 'Checking…',
   loginInProgress: 'Login in progress…',
@@ -192,6 +200,14 @@ export const en = {
 
 /** zh strings, one per {@link en} key. */
 export const zh = {
+  apiKeyAdd: '添加 API Key 账号',
+  apiKeyAccount: '账号名称（必填）',
+  apiKeyDedicated: 'Coding Plan 专用 API Key',
+  apiKeySaveFailed: 'API Key 保存失败，请检查账号名称和 Coding Plan 专用密钥后重试。',
+  codingPlanHint: '请使用 Coding Plan 专用 API Key，而非通用 API 密钥。通过默认账号或独立模型入口手动切换，不支持自动账号池。仅添加本人拥有或已获授权的账号。保存仅存储密钥，不会向服务商验证其有效性。此接入不代表服务商已批准 DSH。',
+  codingPlanEndpoint: '固定中国区端点：{endpoint}',
+  codingPlanDashboard: '前往服务商控制台查看用量',
+  usageUnavailable: '额度不可用 — 此处暂不支持获取该服务商的用量数据。',
   accountsManage: '管理',
   accountsTitle: '管理 {provider}',
   subscriptionDisplayName: '订阅显示名',
@@ -242,7 +258,7 @@ export const zh = {
   modelsUnavailable: "当前不可用",
 
   nav: '订阅',
-  intro: '在此登录或退出订阅服务商。点击登录会在新标签页打开服务商的授权页面；无浏览器环境可改为粘贴回调 URL 或授权码。',
+  intro: '在此管理订阅账号。浏览器登录会打开服务商的授权页面；Coding Plan 则使用专用 API Key 添加。',
   unavailable: '连接不可用，无法加载订阅状态。',
   checking: '查询中…',
   loginInProgress: '登录中…',

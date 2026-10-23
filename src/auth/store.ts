@@ -20,10 +20,22 @@ import { dirname } from 'node:path'
 import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 
 /** Provider routes this plugin can serve. */
-export type ProviderId = 'codex' | 'claude' | 'grok' | 'copilot' | 'antigravity'
+export type ProviderId = 'codex' | 'claude' | 'grok' | 'copilot' | 'antigravity' | 'zhipu' | 'aliyun'
 
 /** Every provider route, in display order. */
-export const PROVIDER_IDS: readonly ProviderId[] = ['codex', 'claude', 'grok', 'copilot', 'antigravity']
+export const PROVIDER_IDS: readonly ProviderId[] = ['codex', 'claude', 'grok', 'copilot', 'antigravity', 'zhipu', 'aliyun']
+
+/** Coding-plan API keys never refresh; account is a user-supplied stable label. */
+export interface ApiKeySession {
+  accessToken: string
+  refreshToken: ''
+  expiresAt: number
+  account: string
+}
+export type ApiKeyProviderId = 'zhipu' | 'aliyun'
+export function isApiKeyProvider(provider: ProviderId): provider is ApiKeyProviderId {
+  return provider === 'zhipu' || provider === 'aliyun'
+}
 
 /** Stored ChatGPT/Codex subscription session. */
 export interface CodexSession {
@@ -115,6 +127,8 @@ export interface ProviderAccounts<S> {
 
 /** The durable store shape: per provider, its accounts. */
 export interface SessionMap {
+  zhipu?: ProviderAccounts<ApiKeySession>
+  aliyun?: ProviderAccounts<ApiKeySession>
   codex?: ProviderAccounts<CodexSession>
   claude?: ProviderAccounts<ClaudeSession>
   grok?: ProviderAccounts<GrokSession>
@@ -123,7 +137,7 @@ export interface SessionMap {
 }
 
 /** Any stored session, for provider-agnostic plumbing. */
-export type StoredSession = CodexSession | ClaudeSession | GrokSession | CopilotSession | AntigravitySession
+export type StoredSession = ApiKeySession | CodexSession | ClaudeSession | GrokSession | CopilotSession | AntigravitySession
 
 /** The session type one provider stores. */
 export type SessionOf<K extends ProviderId> = NonNullable<SessionMap[K]>['accounts'][string]
@@ -161,6 +175,9 @@ export function accountKeyOf(provider: ProviderId, session: StoredSession): stri
       // JSON tuple encoding avoids separator collisions and distinguishes IDs from emails.
       return JSON.stringify([codex.accountId, user === undefined ? 'email' : 'user', user ?? email!.toLowerCase()])
     }
+    case 'zhipu':
+    case 'aliyun':
+      return (session as ApiKeySession).account
     case 'claude':
       return (session as ClaudeSession).emailAddress ?? tokenHash(session.refreshToken)
     case 'grok':
@@ -301,12 +318,13 @@ function assertSessionShape(provider: ProviderId, account: string, value: unknow
   }
   const entry = value as Record<string, unknown>
   if (typeof entry.accessToken !== 'string' || entry.accessToken.length === 0
-    || typeof entry.refreshToken !== 'string' || entry.refreshToken.length === 0
+    || typeof entry.refreshToken !== 'string' || (!isApiKeyProvider(provider) && entry.refreshToken.length === 0)
     || typeof entry.expiresAt !== 'number' || !Number.isFinite(entry.expiresAt)) {
     throw new Error(
       `subscriptions auth store: entry "${provider}/${account}" is missing accessToken/refreshToken/expiresAt; fix or delete the store file`,
     )
   }
+  if (isApiKeyProvider(provider) && !isValidSessionShape(value, provider)) throw new Error('invalid coding-plan API key session')
   if (provider === 'antigravity'
     && (typeof entry.projectId !== 'string' || entry.projectId.length === 0)) {
     throw new Error(
@@ -376,7 +394,7 @@ function parseStore(text: string, path: string): SessionMap {
     const record = entry as Record<string, unknown>
     if (typeof record.accessToken === 'string') {
       // Single-account format: wrap the bare session, preserving every field.
-      if (!isValidSessionShape(record)) {
+      if (!isValidSessionShape(record, provider)) {
         console.warn(`subscriptions auth store: legacy entry "${provider}" has no usable tokens; skipped`)
         continue
       }
@@ -396,7 +414,7 @@ function parseStore(text: string, path: string): SessionMap {
     }
     const kept: Record<string, StoredSession> = {}
     for (const [account, session] of Object.entries(accounts)) {
-      if (isValidSessionShape(session)) {
+      if (isValidSessionShape(session, provider)) {
         kept[account] = session as StoredSession
       } else {
         console.warn(
@@ -415,11 +433,11 @@ function parseStore(text: string, path: string): SessionMap {
 }
 
 /** Whether a value carries the fields every stored session needs (non-empty tokens). */
-function isValidSessionShape(value: unknown): boolean {
+function isValidSessionShape(value: unknown, provider: ProviderId): boolean {
   if (typeof value !== 'object' || value === null) return false
   const entry = value as Record<string, unknown>
   return typeof entry.accessToken === 'string' && entry.accessToken.length > 0
-    && typeof entry.refreshToken === 'string' && entry.refreshToken.length > 0
+    && typeof entry.refreshToken === 'string' && (isApiKeyProvider(provider) ? entry.refreshToken === '' && typeof entry.account === 'string' && entry.account.trim().length > 0 && entry.expiresAt === Number.MAX_SAFE_INTEGER : entry.refreshToken.length > 0)
     && typeof entry.expiresAt === 'number' && Number.isFinite(entry.expiresAt)
 }
 

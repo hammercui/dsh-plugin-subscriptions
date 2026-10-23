@@ -67,6 +67,9 @@ import type {
 import { DISCOVERY_TIMEOUT_MS, validateModels, withTimeout } from './providers/common.js'
 import { startCatalogRefresh } from './providers/catalog-refresh.js'
 import type { ModelEntry, ProviderUsage } from './providers/common.js'
+import { CodingPlanAdapter, fetchZhipuUsage } from './providers/coding-plan.js'
+import { isApiKeyProvider } from './auth/store.js'
+import type { ApiKeySession, ApiKeyProviderId } from './auth/store.js'
 import { AccountTokenManager } from './providers/accounts.js'
 import type { AccountAwareAdapter } from './providers/accounts.js'
 import { DEFAULT_RATE_LIMIT_MAX_WAIT_MS, resolveRateLimitWait } from './providers/rate-limit.js'
@@ -145,7 +148,7 @@ import { ProviderSettingsStore, PROVIDER_TOOLS, validatePreferences } from './pr
 export type { ModelEntry, ProviderUsage, UsageWindow } from './providers/common.js'
 export type { RateLimitConfig, RateLimitWait } from './providers/rate-limit.js'
 export type { ProviderStatus } from './auth/rpc.js'
-export type { AntigravitySession, ClaudeSession, CodexSession, CopilotSession, GrokSession, ProviderId } from './auth/store.js'
+export type { ApiKeySession, ApiKeyProviderId, AntigravitySession, ClaudeSession, CodexSession, CopilotSession, GrokSession, ProviderId } from './auth/store.js'
 
 export const name = 'dsh-plugin-subscriptions'
 export const inject = ['llm']
@@ -182,6 +185,8 @@ export interface Config {
     grok?: ModelEntry[]
     copilot?: ModelEntry[]
     antigravity?: ModelEntry[]
+    zhipu?: ModelEntry[]
+    aliyun?: ModelEntry[]
   }
   /** Antigravity-specific OAuth and endpoint configuration. */
   antigravity?: AntigravityRuntimeConfig & {
@@ -209,7 +214,7 @@ export interface Config {
   }
 }
 
-const providerIdSchema = z.union(['codex', 'claude', 'grok', 'copilot', 'antigravity'])
+const providerIdSchema = z.union(['codex', 'claude', 'grok', 'copilot', 'antigravity', 'zhipu', 'aliyun'])
 const modelEntrySchema: z<ModelEntry> = z.object({
   id: z.string().required(),
   name: z.string(),
@@ -226,7 +231,7 @@ const poolMemberSchema: z<PoolMemberRef> = z.object({
 })
 
 export const Config: z<Config> = z.object({
-  providers: z.array(providerIdSchema).default(['codex', 'claude', 'grok', 'copilot', 'antigravity']),
+  providers: z.array(providerIdSchema).default(['codex', 'claude', 'grok', 'copilot', 'antigravity', 'zhipu', 'aliyun']),
   codexClientVersion: z.string(),
   streamIdleTimeoutMs: z.number().min(1).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
   claudePromptCacheTtl: z.union(['5m', '1h']).default(DEFAULT_PROMPT_CACHE_TTL),
@@ -240,6 +245,8 @@ export const Config: z<Config> = z.object({
     grok: z.array(modelEntrySchema),
     copilot: z.array(modelEntrySchema),
     antigravity: z.array(modelEntrySchema),
+    zhipu: z.array(modelEntrySchema),
+    aliyun: z.array(modelEntrySchema),
   }),
   antigravity: z.object({
     clientId: z.string(),
@@ -261,6 +268,17 @@ export const Config: z<Config> = z.object({
 
 /** Built-in catalogs used when the config does not override a provider's models. */
 const DEFAULT_MODELS: Record<ProviderId, ModelEntry[]> = {
+  // Suggested static catalog; the account's real entitlement comes from the provider.
+  zhipu: [
+    { id: 'glm-4.7', name: 'GLM-4.7' },
+    { id: 'glm-5-turbo', name: 'GLM-5-Turbo' },
+    { id: 'glm-5.2', name: 'GLM-5.2' },
+    { id: 'glm-5v-turbo', name: 'GLM-5V-Turbo' },
+    { id: 'glm-5.3', name: 'GLM-5.3' },
+    { id: 'glm-5.3-flash', name: 'GLM-5.3-Flash' },
+    { id: 'glm-5.3-highspeed', name: 'GLM-5.3 Highspeed' },
+  ],
+  aliyun: [{ id: 'qwen3-coder-plus', name: 'Qwen3 Coder Plus' }],
   codex: [
     { id: 'gpt-5.1-codex', name: 'GPT-5.1 Codex' },
     { id: 'gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini' },
@@ -309,6 +327,8 @@ function resolveCatalog(models: Config['models']): Record<ProviderId, ModelEntry
     grok: resolve('grok'),
     copilot: resolve('copilot'),
     antigravity: resolve('antigravity'),
+    zhipu: resolve('zhipu'),
+    aliyun: resolve('aliyun'),
   }
 }
 
@@ -323,6 +343,8 @@ function accountOf(provider: ProviderId, session: StoredSession | undefined): st
       return codex.emailAddress ?? codexProfileClaims(codex.idToken).emailAddress ?? codex.accountId
     }
     case 'claude': return (session as ClaudeSession).emailAddress
+    case 'zhipu':
+    case 'aliyun': return (session as ApiKeySession).account
     case 'grok': return (session as GrokSession).account
     case 'copilot': return (session as CopilotSession).account
     case 'antigravity': return (session as AntigravitySession).account
@@ -443,7 +465,7 @@ export class SubscriptionsAuthController implements AuthController {
     if (force) this.onUsageForced?.(provider, account)
     const fetcher = this.usageFetchers[provider]
     if (fetcher === undefined) return Promise.resolve({ supported: false })
-    if (this.poolUsage === undefined) return fetcher(account, signal)
+    if (this.poolUsage === undefined || isApiKeyProvider(provider)) return fetcher(account, signal)
     return this.poolUsage.snapshotFor(provider, account, force)
   }
 
@@ -486,7 +508,16 @@ export class SubscriptionsAuthController implements AuthController {
     }
   }
 
+  async saveApiKey(provider: ApiKeyProviderId, account: string, apiKey: string): Promise<void> {
+    if (!isApiKeyProvider(provider) || ['__proto__', 'constructor', 'prototype'].includes(account.trim()) || !account.trim() || account.trim().length > 160 || !apiKey.trim() || /[\u0000-\u001f\u007f]/.test(account) || /\s/.test(apiKey.trim())) throw new BadRequest('invalid API key account')
+    const session: ApiKeySession = { account: account.trim(), accessToken: apiKey.trim(), refreshToken: '', expiresAt: Number.MAX_SAFE_INTEGER }
+    await this.persist(provider, session)
+    this.lastError.delete(provider)
+    this.onAuthChanged(provider, session.account)
+  }
+
   async login(provider: ProviderId, method?: LoginMethod): Promise<{ authorizeUrl: string; userCode?: string }> {
+    if (isApiKeyProvider(provider)) throw new BadRequest('Coding Plan providers require saveApiKey, not OAuth login')
     if (provider === 'claude' && method !== 'oauth') {
       const imported = this.readClaudeCreds()
       if (imported !== undefined) {
@@ -609,6 +640,8 @@ export class SubscriptionsAuthController implements AuthController {
   /** Token exchange for one OAuth code; `protected` so tests can stand in for the provider endpoint. */
   protected exchange(provider: ProviderId, code: string, attempt: OAuthAttempt): Promise<StoredSession> {
     switch (provider) {
+      case 'zhipu':
+      case 'aliyun': return Promise.reject(new BadRequest('Coding Plan providers do not use OAuth'))
       case 'codex':
         return exchangeCodexCode(code, attempt.pkce.verifier, attempt.redirectUri)
       case 'claude':
@@ -823,6 +856,16 @@ export function apply(ctx: Context, config: Config): void {
   }
   for (const provider of providers) {
     switch (provider) {
+      case 'zhipu':
+      case 'aliyun': {
+        const tokens = new AccountTokenManager<ApiKeySession>({ provider, displayName: provider, makeOptions: () => ({ preemptMs: 0, refresh: async session => session, isPermanent: () => false }) })
+        accountTokens.set(provider, tokens as AccountTokenManager<StoredSession>)
+        if (provider === 'zhipu') usageFetchers.zhipu = async (account, signal) => fetchZhipuUsage(await tokens.session(account), proxiedFetch, signal)
+        const adapter = new CodingPlanAdapter({ provider, tokens, models: catalog[provider], streamIdleTimeoutMs })
+        adapters.set(provider, adapter)
+        handles.set(provider, register(provider, adapter))
+        break
+      }
       case 'codex': {
         const tokens = new AccountTokenManager<CodexSession>({
           provider: 'codex',
@@ -1064,6 +1107,8 @@ export function apply(ctx: Context, config: Config): void {
             AbortSignal.timeout(POOL_USAGE_TIMEOUT_MS),
           )
         }
+        case 'zhipu':
+        case 'aliyun':
         case 'copilot':
           return undefined
       }
@@ -1078,6 +1123,7 @@ export function apply(ctx: Context, config: Config): void {
         // models). A hang or discovery failure sits that account out.
         const sources: Parameters<typeof buildAccountPools>[0] = {}
         await Promise.all([...adapters].map(async ([provider, adapter]) => {
+          if (isApiKeyProvider(provider)) return // Coding plans are manual-selection only.
           try {
             const accounts = (await accountTokens.get(provider)?.list() ?? []).map(entry => entry.key)
             if (accounts.length === 0) return
@@ -1099,6 +1145,7 @@ export function apply(ctx: Context, config: Config): void {
       }
       for (const [id, members] of Object.entries(poolConfig?.families ?? {})) {
         if (members.length === 0) continue
+        if (members.some(member => isApiKeyProvider(member.provider))) continue
         const owner = members[0].provider
         const kept = members.filter(member => member.provider === owner)
         if (kept.length < members.length) {

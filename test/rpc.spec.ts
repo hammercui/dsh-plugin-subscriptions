@@ -38,6 +38,25 @@ async function mount(attachments?: FakeStore): Promise<ConnectionRpcHandler> {
   return fake.handler
 }
 
+test('saveApiKey only accepts coding providers and returns no secrets', async () => {
+  const handler = await mount()
+  const signal = new AbortController().signal
+  for (const provider of ['zhipu', 'aliyun']) {
+    const result = await handler('saveApiKey', { provider, account: 'work', apiKey: 'test-secret-key' }, signal)
+    assert.deepEqual(result, { ok: true, value: { saved: true } })
+    const status = await handler('status', {}, signal)
+    assert.doesNotMatch(JSON.stringify(status), /test-secret-key/)
+    const oauth = await handler('login', { provider }, signal)
+    assert.equal(oauth.ok, false)
+  }
+  for (const payload of [
+    { provider: 'codex', account: 'work', apiKey: 'key' },
+    { provider: 'zhipu', account: ' ', apiKey: 'key' },
+    { provider: 'aliyun', account: 'work', apiKey: ' ' },
+    { provider: 'zhipu', account: 'work', apiKey: 'key', url: 'https://evil.invalid' },
+  ]) assert.equal((await handler('saveApiKey', payload, signal)).ok, false)
+})
+
 const REF = { attachmentId: 'att-1', mediaType: 'image/png', bytes: 2, width: 1, height: 1 }
 
 async function call(

@@ -58,10 +58,11 @@ export function validateModels(models: readonly ModelEntry[], label: string): Mo
     if (model.maxTokens !== undefined && (!Number.isInteger(model.maxTokens) || model.maxTokens <= 0)) {
       throw new Error(`${label}: catalog model "${model.id}" maxTokens must be a positive integer`)
     }
+    // Schemastery fills an omitted array field with [], so an empty list means
+    // the config named no modalities — not that the model accepts none.
     if (model.inputModalities !== undefined
-      && (model.inputModalities.length === 0
-        || model.inputModalities.some(modality => modality !== 'text' && modality !== 'image'))) {
-      throw new Error(`${label}: catalog model "${model.id}" inputModalities must be a non-empty list of "text"/"image"`)
+      && model.inputModalities.some(modality => modality !== 'text' && modality !== 'image')) {
+      throw new Error(`${label}: catalog model "${model.id}" inputModalities must be a list of "text"/"image"`)
     }
     if (model.wire !== undefined && model.wire !== 'chat-completions' && model.wire !== 'responses') {
       throw new Error(`${label}: catalog model "${model.id}" wire must be "chat-completions" or "responses"`)
@@ -73,7 +74,8 @@ export function validateModels(models: readonly ModelEntry[], label: string): Mo
       ...model.name === undefined ? {} : { name: model.name },
       ...model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow },
       ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
-      ...model.inputModalities === undefined ? {} : { inputModalities: [...model.inputModalities] },
+      ...model.inputModalities === undefined || model.inputModalities.length === 0
+        ? {} : { inputModalities: [...model.inputModalities] },
       ...model.wire === undefined ? {} : { wire: model.wire },
     }
   })

@@ -32,6 +32,7 @@ const actions: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 8, alig
 
 /** Native top-layer dialog provides keyboard containment, Escape and focus restoration. */
 export function ProviderAccountManager({ provider, name, rpc, t, onClose }: Props) {
+  const codingPlan = provider === 'zhipu' || provider === 'aliyun'
   const dialog = useRef<HTMLDialogElement>(null)
   const title = useId()
   const description = useId()
@@ -134,7 +135,7 @@ export function ProviderAccountManager({ provider, name, rpc, t, onClose }: Prop
         <h2 id={title} style={{ margin: 0 }}>{t('accountsTitle', { provider: name })}</h2>
         <button type="button" autoFocus disabled={saving} onClick={onClose}>{t('imageClose')}</button>
       </header>
-      <p id={description} className="dsh-subscription-hint">{t('accountsHint')}</p>
+      <p id={description} className="dsh-subscription-hint">{t(codingPlan ? 'codingPlanHint' : 'accountsHint')}</p>
       {error && <p role="alert">{error}</p>}
       {loading && <p role="status" className="dsh-subscription-hint">{t('accountsLoading')}</p>}
       {!loading && !catalog && <button type="button" onClick={() => setAttempt(value => value + 1)}>{t('modelDefaultsRetry')}</button>}
@@ -179,12 +180,12 @@ export function ProviderAccountManager({ provider, name, rpc, t, onClose }: Prop
                   edit(account.key, next)
                 }} />
             </label>
-            <label><input type="checkbox" checked={preferences.poolEnabled !== false}
-              onChange={event => edit(account.key, { ...preferences, poolEnabled: event.target.checked })} /> {t('accountsPoolEnabled')}</label>
+            {!codingPlan && <label><input type="checkbox" checked={preferences.poolEnabled !== false}
+              onChange={event => edit(account.key, { ...preferences, poolEnabled: event.target.checked })} /> {t('accountsPoolEnabled')}</label>}
             <label><input type="checkbox" checked={preferences.independentEntry === true}
               onChange={event => edit(account.key, { ...preferences, independentEntry: event.target.checked })} /> {t('accountsIndependent')}</label>
             <p className="dsh-subscription-hint">{t('accountsIndependentHint')}</p>
-            <details>
+            {!codingPlan && <details>
               <summary style={{ cursor: 'pointer', fontSize: 13 }}>{t('accountsModels')} · {preferences.poolModels === undefined
                 ? t('accountsModelsAll') : t('accountsModelsCount', { count: preferences.poolModels.length })}</summary>
               <div style={{ ...stack, marginTop: 12 }}>
@@ -210,7 +211,7 @@ export function ProviderAccountManager({ provider, name, rpc, t, onClose }: Prop
                   {models.length === 0 && <p className="dsh-subscription-hint">{t('accountsNoModels')}</p>}
                 </div>
               </div>
-            </details>
+            </details>}
           </fieldset>
         })}
       </fieldset>}

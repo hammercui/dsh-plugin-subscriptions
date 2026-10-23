@@ -12,7 +12,7 @@ import type { HostConnectionHandle } from '@deepseek-ai/dsh-client-connection'
 import type { RpcResult } from '../compat.js'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
-import { PROVIDER_IDS, type ProviderId } from './store.js'
+import { PROVIDER_IDS, isApiKeyProvider, type ApiKeyProviderId, type ProviderId } from './store.js'
 import type { ProviderUsage } from '../providers/common.js'
 import type { ProxyConfigView, ProxyDraft, ProxyInput, ProxyTestResult } from '../http.js'
 import type { CliVersion } from '../providers/npm-cli-version.js'
@@ -37,7 +37,7 @@ export const SUBSCRIPTIONS_AUTH_PREFIX = 'subscriptions-auth.'
  */
 export const SUBSCRIPTIONS_AUTH_ENDPOINTS = [
   'providerSettings', 'setProviderSettings',
-  'status', 'login', 'manual', 'cancel', 'logout', 'setDefault', 'usage',
+  'status', 'saveApiKey', 'login', 'manual', 'cancel', 'logout', 'setDefault', 'usage',
   'image', 'video', 'prepareReset', 'consumeReset',
   'speed', 'setSpeed',
   'proxyGet', 'proxySet', 'proxyTest',
@@ -166,7 +166,11 @@ export interface ModelDefaultsController {
 }
 
 /** Provider-agnostic auth operations the RPC handler delegates to. */
+export interface SaveApiKeyPayload { provider: ApiKeyProviderId; account: string; apiKey: string }
+export interface SaveApiKeyResult { saved: true }
+
 export interface AuthController {
+  saveApiKey?(provider: ApiKeyProviderId, account: string, apiKey: string): Promise<void>
   prepareReset?(account: string, signal: AbortSignal): Promise<unknown>
   consumeReset?(account: string, ticket: string, signal: AbortSignal): Promise<void>
   /** Current status of one provider. */
@@ -550,6 +554,19 @@ async function dispatch(
         const displayName = providerSettings?.displayName?.(provider)
         return [provider, { ...status, ...(displayName ? { displayName } : {}) }]
       })) })
+    }
+    case 'saveApiKey': {
+      const provider = readProvider(payload)
+      if (!isApiKeyProvider(provider)) throw new BadRequest('saveApiKey only supports zhipu and aliyun')
+      const record = payload as Record<string, unknown>
+      if (Object.keys(record).some(key => !['provider', 'account', 'apiKey'].includes(key))) throw new BadRequest('unexpected saveApiKey field')
+      const account = readString(payload, 'account').trim()
+      const apiKey = readString(payload, 'apiKey').trim()
+      if (['__proto__', 'constructor', 'prototype'].includes(account) || !account || account.length > 160 || /[\u0000-\u001f\u007f]/.test(account)) throw new BadRequest('invalid account label')
+      if (!apiKey || /\s/.test(apiKey)) throw new BadRequest('invalid API key')
+      if (!controller.saveApiKey) throw new BadRequest('API key saving unavailable')
+      await controller.saveApiKey(provider, account, apiKey)
+      return ok({ saved: true } satisfies SaveApiKeyResult)
     }
     case 'login': {
       const provider = readProvider(payload)

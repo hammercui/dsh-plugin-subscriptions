@@ -1,6 +1,6 @@
 import { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, PreparedAdapterCall, StreamChunk } from '@deepseek-ai/dsh-llm'
-import type { ProviderId } from '../auth/store.js'
+import { isApiKeyProvider, type ProviderId } from '../auth/store.js'
 import type { ProviderSettingsStore, AccountPreferences } from '../provider-settings.js'
 import type { AccountAwareAdapter } from './accounts.js'
 import { DISCOVERY_TIMEOUT_MS, withAbortSignal, withTimeout } from './common.js'
@@ -61,13 +61,19 @@ export class AccountPreferencesAdapter extends LlmAdapter {
   }
   private async requireAccount(account: string, model: string, independent: boolean, signal?: AbortSignal): Promise<void> {
     if (!(await withAbortSignal(this.options.accounts, signal)).some(entry => entry.key === account)
-      || (independent ? this.preference(account)?.independentEntry !== true : !accountAllowsPool(this.preference(account), model))
+      || (independent ? this.preference(account)?.independentEntry !== true : !isApiKeyProvider(this.options.provider) && !accountAllowsPool(this.preference(account), model))
       || !(await this.models(account, signal)).some(entry => entry.id === model)) {
       throw new LlmError(`Account route unavailable: ${this.options.provider}/${account}/${model}`, 'NO_ADAPTER')
     }
   }
   private async fallback(model: string, signal?: AbortSignal): Promise<string> {
-    for (const { key } of await withAbortSignal(this.options.accounts, signal)) {
+    const accounts = await withAbortSignal(this.options.accounts, signal)
+    if (isApiKeyProvider(this.options.provider)) {
+      const key = accounts[0]?.key
+      if (!key || !(await this.models(key, signal)).some(entry => entry.id === model)) throw new LlmError('Default coding-plan account unavailable', 'NO_ADAPTER')
+      return key
+    }
+    for (const { key } of accounts) {
       if (!accountAllowsPool(this.preference(key), model)) continue
       try { await this.requireAccount(key, model, false, signal); return key } catch { signal?.throwIfAborted() }
     }
@@ -76,7 +82,9 @@ export class AccountPreferencesAdapter extends LlmAdapter {
   /** Pool-only facade: explicit families/tiers must obey the same policy as auto pools. */
   poolMember(): AccountAwareAdapter {
     const raw = this.options.adapter
+    const codingPlan = isApiKeyProvider(this.options.provider)
     const keyFor = async (account: string | undefined, model: string, signal?: AbortSignal): Promise<string> => {
+      if (codingPlan) throw new LlmError('Coding plans require manual account selection', 'NO_ADAPTER')
       if (model.startsWith(ACCOUNT_MODEL_PREFIX)) throw new LlmError('Independent entries cannot be pool members', 'NO_ADAPTER')
       const key = account ?? (await withAbortSignal(this.options.accounts, signal))[0]?.key
       if (!key) throw new LlmError('No account available', 'NO_ADAPTER')
@@ -107,7 +115,7 @@ export class AccountPreferencesAdapter extends LlmAdapter {
       const preferences = this.preference(key)
       for (const model of models) {
         if (model.id.startsWith(ACCOUNT_MODEL_PREFIX)) continue
-        if (accountAllowsPool(preferences, model.id) && this.options.settings.visible(this.options.provider, model.id) && !result.has(model.id)) result.set(model.id, model)
+        if ((isApiKeyProvider(this.options.provider) || accountAllowsPool(preferences, model.id)) && this.options.settings.visible(this.options.provider, model.id) && !result.has(model.id)) result.set(model.id, model)
         if (preferences?.independentEntry === true && this.options.settings.visible(this.options.provider, model.id)) {
           const id = accountModelId(key, model.id)
           result.set(id, { ...model, id, name: `${preferences.alias || label} · ${this.options.settings.modelName(this.options.provider, model.id, model.name)}` })

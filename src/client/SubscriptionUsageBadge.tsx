@@ -82,6 +82,7 @@ export interface AccountUsageDisplay {
   /** The account direct routes serve; the collapsed pill reads this one. */
   isDefault: boolean
   windows: UsageWindow[]
+  supported?: boolean
 }
 
 /** One provider's usage snapshot: every logged-in account that reports windows. */
@@ -104,6 +105,8 @@ const PROVIDER_NAMES: Record<SubscriptionProvider, string> = {
   grok: 'Grok',
   copilot: 'Copilot',
   antigravity: 'Antigravity',
+  zhipu: '智谱 Coding Plan (CN)',
+  aliyun: 'Alibaba Coding Plan',
 }
 
 /**
@@ -174,7 +177,9 @@ export function previewWindows(windows: readonly UsageWindow[], model?: string, 
 
 /** Bounded readout; Antigravity quotas belong to individual models, not the account. */
 export function compactSegment(d: ProviderUsageDisplay, model?: string, t: Translate = fallbackTranslate): string {
-  const windows = pillAccountOf(d).windows
+  const account = pillAccountOf(d)
+  if (account.supported === false) return `${d.name} ${t('usageUnavailable')}`
+  const windows = account.windows
   if (d.provider === 'antigravity') {
     const matching = model === undefined ? [] : windows.filter(w => w.scope === model)
     if (matching.length === 0) {
@@ -279,6 +284,7 @@ export function SubscriptionUsageBadge({ rpc, currentModel, t }: SubscriptionUsa
   // account actually logs out or a fetch succeeds but reports the window as
   // unsupported.
   const lastKnownRef = useRef(new Map<string, UsageWindow[]>())
+  const unsupportedRef = useRef(new Set<string>())
   const namesRevision = useRef(0)
   const recentNames = useRef(new Map<SubscriptionProvider, { revision: number; name: string }>())
 
@@ -305,6 +311,7 @@ export function SubscriptionUsageBadge({ rpc, currentModel, t }: SubscriptionUsa
       // Drop last-known state for anything no longer logged in — that is a
       // real signal, unlike a fetch failure.
       const live = new Set(roster.map(({ provider, account }) => keyOf(provider, account)))
+      for (const key of unsupportedRef.current) { if (!live.has(key)) unsupportedRef.current.delete(key) }
       for (const key of lastKnown.keys()) {
         if (!live.has(key)) lastKnown.delete(key)
       }
@@ -327,6 +334,8 @@ export function SubscriptionUsageBadge({ rpc, currentModel, t }: SubscriptionUsa
         if (r.status !== 'fulfilled') continue // keep whatever is cached for this account
         const { provider, account, usage } = r.value
         const key = keyOf(provider, account)
+        if (usage.supported) unsupportedRef.current.delete(key)
+        else unsupportedRef.current.add(key)
         if (usage.plan !== undefined) plans.set(key, usage.plan)
         if (!usage.supported || !usage.windows || usage.windows.length === 0) {
           lastKnown.delete(key)
@@ -339,14 +348,16 @@ export function SubscriptionUsageBadge({ rpc, currentModel, t }: SubscriptionUsa
       for (const { provider, account } of roster) {
         const key = keyOf(provider, account)
         const windows = lastKnown.get(key)
-        if (windows === undefined) continue
+        const unsupported = unsupportedRef.current.has(key)
+        if (windows === undefined && !unsupported) continue
         const plan = plans.get(key) ?? account.plan
         const row: AccountUsageDisplay = {
           key: account.key,
           isDefault: account.isDefault,
           ...account.account === undefined ? {} : { account: account.account },
           ...plan === undefined ? {} : { plan },
-          windows,
+          windows: unsupported ? [] : windows!,
+          supported: !unsupported,
         }
         const display = byProvider.get(provider)
         if (display === undefined) byProvider.set(provider, { provider, name: statusResp.providers[provider]?.displayName || PROVIDER_NAMES[provider], accounts: [row] })
@@ -513,13 +524,13 @@ export function SubscriptionUsageBadge({ rpc, currentModel, t }: SubscriptionUsa
                       <AccountMeta account={account} translate={translate} />
                     </div>
                   )}
-                  <AccountWindows
+                  {account.supported === false ? <p style={{ margin: 0 }}>{translate('usageUnavailable')}</p> : <AccountWindows
                     key={`${d.provider}:${badgeSelection?.model ?? ''}`}
                     windows={account.windows}
                     model={d.provider === badgeSelection?.provider ? badgeSelection.model : undefined}
                     provider={d.provider}
                     translate={translate}
-                  />
+                  />}
                 </div>
               ))}
             </section>
