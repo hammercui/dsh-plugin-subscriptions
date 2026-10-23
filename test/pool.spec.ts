@@ -436,7 +436,7 @@ test('priority: default account wins even when pool membership order differs', a
   assert.deepEqual(codex.accounts, ['default'])
 })
 
-test('priority: fallback keeps health cooldown and recovered default wins new requests', async () => {
+test('priority: fallback keeps health cooldown and recovered default wins in the same session', async () => {
   const codex = new FakeAdapter((_options, account) => serveOk(account))
   const { pool, health } = makePool({ codex }, { defaultAccount: 'default', families: new Map([
     [poolKey('codex', 'm'), { members: [
@@ -444,12 +444,15 @@ test('priority: fallback keeps health cooldown and recovered default wins new re
       { provider: 'codex', account: 'secondary', model: 'm' },
     ] }],
   ]) })
+  const options = { ...OPTIONS, sessionId: SessionId('priority-default-recovery') }
   health.markUnavailable(memberKey('codex', 'default', 'm'), 60_000, 'QUOTA')
-  await collect(pool.stream(OPTIONS))
-  assert.deepEqual(codex.accounts, ['secondary'])
+  await collect(pool.stream(options))
+  await collect(pool.stream(options))
+  assert.deepEqual(codex.accounts, ['secondary', 'secondary'])
+  assert.equal(health.isMemberAvailable('codex', 'default', 'm'), false)
   health.clear('codex')
-  await collect(pool.stream(OPTIONS))
-  assert.deepEqual(codex.accounts, ['secondary', 'default'])
+  await collect(pool.stream(options))
+  assert.deepEqual(codex.accounts, ['secondary', 'secondary', 'default'])
 })
 
 test('quota_aware: healthy default wins over urgency and recovered default overrides same-session stickiness', async () => {
@@ -497,9 +500,10 @@ test('priority: a cooling account is skipped', async () => {
   assert.deepEqual(codex.accounts, ['a2'])
 })
 
-test('priority: a sticky session keeps its account after the leader recovers', async () => {
+test('priority: without a default member, a sticky session keeps its account after the leader recovers', async () => {
   const codex = new FakeAdapter((_options, account) => serveOk(account))
-  const { pool, health } = makePool({ codex })
+  // The default does not list this model; fallback priority still preserves affinity.
+  const { pool, health } = makePool({ codex }, { defaultAccount: 'not-in-this-pool' })
   const options = { ...OPTIONS, sessionId: SessionId('s1') }
   health.markUnavailable(memberKey('codex', 'a1', 'm'), 60_000, 'QUOTA')
   await collect(pool.stream(options))
@@ -526,10 +530,11 @@ function windowUsage(usedPercent: number, horizonMs: number): ProviderUsage {
   }
 }
 
-test('quota_aware: the most urgent window (soon reset, plenty left) wins', async () => {
+test('quota_aware: without a default member, the most urgent window (soon reset, plenty left) wins', async () => {
   const codex = new FakeAdapter((_options, account) => serveOk(account))
   const { pool } = makePool({ codex }, {
     strategy: 'quota_aware',
+    defaultAccount: 'not-in-this-pool',
     usage: usageFetchers({
       'codex/a1': windowUsage(50, 5 * 60 * 60_000),
       'codex/a2': windowUsage(10, 30 * 60_000),
@@ -539,10 +544,11 @@ test('quota_aware: the most urgent window (soon reset, plenty left) wins', async
   assert.equal((chunks[0] as { text: string }).text, 'a2')
 })
 
-test('quota_aware: a window past the full mark gates its account out', async () => {
+test('quota_aware: a default past the full mark yields to an available fallback', async () => {
   const codex = new FakeAdapter((_options, account) => serveOk(account))
   const { pool } = makePool({ codex }, {
     strategy: 'quota_aware',
+    defaultAccount: 'a2',
     usage: usageFetchers({
       'codex/a1': windowUsage(50, 5 * 60 * 60_000),
       'codex/a2': windowUsage(96, 30 * 60_000),
@@ -552,11 +558,12 @@ test('quota_aware: a window past the full mark gates its account out', async () 
   assert.deepEqual(codex.accounts, ['a1'])
 })
 
-test('quota_aware: an account without telemetry sinks behind a measured one', async () => {
+test('quota_aware: with a quota-full default, an unmeasured fallback sinks behind a measured one', async () => {
   const copilot = new FakeAdapter((_options, account) => serveOk(account))
   const family = new Map<string, PoolDefinition>([
     [poolKey('copilot', 'm'), {
       members: [
+        { provider: 'copilot', account: 'default', model: 'm' },
         { provider: 'copilot', account: 'a1', model: 'm' },
         { provider: 'copilot', account: 'a2', model: 'm' },
       ],
@@ -565,21 +572,34 @@ test('quota_aware: an account without telemetry sinks behind a measured one', as
   const { pool } = makePool({ copilot }, {
     strategy: 'quota_aware',
     families: family,
-    // a1 has no fetcher (urgency 0); a2 is measured — even 90% used wins.
-    usage: usageFetchers({ 'copilot/a2': windowUsage(90, 60 * 60_000) }),
+    defaultAccount: 'default',
+    // The default has no quota. Among fallbacks, a1 has no fetcher (urgency 0);
+    // a2 is measured — even 90% used wins.
+    usage: usageFetchers({
+      'copilot/default': windowUsage(97, 60 * 60_000),
+      'copilot/a2': windowUsage(90, 60 * 60_000),
+    }),
   })
   await collect(pool.stream({ ...OPTIONS, provider: 'copilot' }))
   assert.deepEqual(copilot.accounts, ['a2'])
 })
 
-test('quota_aware: hysteresis holds the sticky account until the margin is beaten', async () => {
+for (const explicitTier of [false, true]) test(`quota_aware: hysteresis holds until the margin is beaten (${explicitTier ? 'explicit tier' : 'default absent'})`, async () => {
   const data: Record<string, ProviderUsage> = {
     'codex/a1': windowUsage(0, 100 * 60_000),
     'codex/a2': windowUsage(0, 10 * 60_000),
   }
   const usage = usageFetchers(data)
   const codex = new FakeAdapter((_options, account) => serveOk(account))
-  const { pool, usage: tracker } = makePool({ codex }, { strategy: 'quota_aware', switchMargin: 2, usage })
+  const { pool, usage: tracker } = makePool({ codex }, {
+    strategy: 'quota_aware', switchMargin: 2, usage,
+    // Explicit tiers keep urgency/hysteresis even with a healthy provider default.
+    defaultAccount: explicitTier ? 'a1' : 'not-in-this-pool',
+    ...(explicitTier ? { families: new Map(), tiers: { m: [
+      { provider: 'codex', account: 'a1', model: 'm' },
+      { provider: 'codex', account: 'a2', model: 'm' },
+    ] } } : {}),
+  })
   const options = { ...OPTIONS, sessionId: SessionId('s1') }
 
   await collect(pool.stream(options))

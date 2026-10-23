@@ -17,8 +17,8 @@ test('catalog modalities normalize omitted and empty fields without weakening no
   assert.deepEqual(validated.inputModalities, ['text', 'image'])
   assert.notEqual(validated.inputModalities, modalities)
   assert.deepEqual(validateModels([{ id: 'text', inputModalities: ['text'] }], 'test')[0].inputModalities, ['text'])
-  assert.throws(() => validateModels([{ id: 'invalid', inputModalities: ['audio'] as unknown as ModelEntry['inputModalities'] }], 'test'), /inputModalities/)
-  assert.throws(() => validateModels([{ id: 'mixed', inputModalities: ['text', 'audio'] as unknown as ModelEntry['inputModalities'] }], 'test'), /inputModalities/)
+  assert.throws(() => validateModels([{ id: 'invalid', inputModalities: ['audio'] as unknown as NonNullable<ModelEntry['inputModalities']> }], 'test'), /inputModalities/)
+  assert.throws(() => validateModels([{ id: 'mixed', inputModalities: ['text', 'audio'] as unknown as NonNullable<ModelEntry['inputModalities']> }], 'test'), /inputModalities/)
 })
 
 const session = (account: string, accessToken = 'test-key'): ApiKeySession => ({ account, accessToken, refreshToken: '', expiresAt: Number.MAX_SAFE_INTEGER })

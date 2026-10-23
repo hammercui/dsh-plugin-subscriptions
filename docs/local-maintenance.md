@@ -55,11 +55,15 @@ pnpm test
 
 普通 OAuth 账号池按请求优先当前合格且健康的默认账号；配额感知模式仅提升配额可用的默认账号。不可用时保留原有备用调度，恢复后即使同一会话也优先默认账号。显式 tier 不增加默认账号查询，独立入口及 Coding Plan 排除规则不变，详见账号管理文档。
 
-新增回归用例覆盖乱序成员、故障冷却与恢复、同会话配额回退与恢复、显式 tier 的直接/预备调用。测试命令 `pnpm test -- pool.spec.ts` 已尝试，但在 TypeScript 阶段因缺少 Node 类型定义（TS2688；新仓库未安装 node_modules）失败，测试未执行；尚未获准安装开发依赖。静态 diff 检查通过不能代替构建和回归。
+新增回归用例覆盖乱序成员、故障冷却与恢复、同会话配额回退与恢复、显式 tier 的直接/预备调用。最初测试因开发依赖缺失而阻塞；后经用户批准，以 pnpm 10.26.2 执行 `pnpm install --frozen-lockfile` 成功，未改变 manifest 或锁文件。
 
 ## 当前验证边界与风险
 
-本阶段仅建立仓库和迁移源码；尚未安装新依赖、构建、执行测试、打包或替换 desktop 插件。
+2026-10-23 经授权完成依赖安装与验证：`pnpm build` 通过；`pnpm test` 649/649 通过，失败、取消、跳过均为 0。账号池专项 `pnpm exec tsc -p tsconfig.test.json` 与 `node --test lib-test/test/pool.spec.js` 通过（49/49）。
+
+首次测试发现新增非法模态测试的 exactOptionalPropertyTypes 类型断言问题，已用 NonNullable 修正；四项旧调度断言改为默认账号不在候选/额度不足时验证原有备用算法，另增加显式 tier 回归，不删除原有调度覆盖。最终重新执行完整构建与测试成功。
+
+尚未执行隔离浏览器交互测试、真实服务商调用、当前旧版宿主兼容性验证，也未打包部署或替换 desktop 插件。
 
 已完成静态检查：原始 tracked 补丁通过 `git apply --3way` 无冲突应用；`git diff --check` 与暂存区检查通过；浏览器测试脚本 `node --check test/coding-plan-browser.mjs` 语法检查通过。以上均不等于编译或测试通过。
 
