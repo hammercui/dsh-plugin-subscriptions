@@ -405,6 +405,79 @@ test('priority: the first healthy account serves', async () => {
   assert.equal(codex.calls, 1)
 })
 
+test('explicit tiers preserve order without looking up default accounts', async () => {
+  const codex = new FakeAdapter((_options, account) => serveOk(account))
+  const pool = new PoolAdapter({
+    adapters: { codex }, health: new PoolHealthRegistry(),
+    usage: new PoolUsageTracker(() => undefined), strategy: 'priority', switchMargin: 2,
+    defaultAccount: async () => { throw new Error('explicit accounts must not query defaults') },
+    families: async () => new Map(),
+    tiers: { m: [
+      { provider: 'codex', account: 'secondary', model: 'm' },
+      { provider: 'codex', account: 'default', model: 'm' },
+    ] }, onWarn: () => {},
+  })
+  await collect(pool.stream(OPTIONS))
+  const prepared = await pool.prepareCall('codex', 'm')
+  await collect(prepared.stream(OPTIONS))
+  assert.deepEqual(codex.accounts, ['secondary', 'secondary'])
+})
+
+test('priority: default account wins even when pool membership order differs', async () => {
+  const codex = new FakeAdapter((_options, account) => serveOk(account))
+  const family = new Map<string, PoolDefinition>([
+    [poolKey('codex', 'm'), { members: [
+      { provider: 'codex', account: 'secondary', model: 'm' },
+      { provider: 'codex', account: 'default', model: 'm' },
+    ] }],
+  ])
+  const { pool } = makePool({ codex }, { families: family, defaultAccount: 'default' })
+  await collect(pool.stream(OPTIONS))
+  assert.deepEqual(codex.accounts, ['default'])
+})
+
+test('priority: fallback keeps health cooldown and recovered default wins new requests', async () => {
+  const codex = new FakeAdapter((_options, account) => serveOk(account))
+  const { pool, health } = makePool({ codex }, { defaultAccount: 'default', families: new Map([
+    [poolKey('codex', 'm'), { members: [
+      { provider: 'codex', account: 'default', model: 'm' },
+      { provider: 'codex', account: 'secondary', model: 'm' },
+    ] }],
+  ]) })
+  health.markUnavailable(memberKey('codex', 'default', 'm'), 60_000, 'QUOTA')
+  await collect(pool.stream(OPTIONS))
+  assert.deepEqual(codex.accounts, ['secondary'])
+  health.clear('codex')
+  await collect(pool.stream(OPTIONS))
+  assert.deepEqual(codex.accounts, ['secondary', 'default'])
+})
+
+test('quota_aware: healthy default wins over urgency and recovered default overrides same-session stickiness', async () => {
+  const codex = new FakeAdapter((_options, account) => serveOk(account))
+  const data: Record<string, ProviderUsage> = {
+    'codex/default': windowUsage(10, 60 * 60_000),
+    'codex/secondary': windowUsage(0, 5 * 60_000),
+  }
+  const { pool, usage } = makePool({ codex }, { strategy: 'quota_aware', defaultAccount: 'default', usage: usageFetchers(data), families: new Map([
+    [poolKey('codex', 'm'), { members: [
+      { provider: 'codex', account: 'secondary', model: 'm' },
+      { provider: 'codex', account: 'default', model: 'm' },
+    ] }],
+  ]) })
+  const options = { ...OPTIONS, sessionId: SessionId('default-recovery') }
+  await collect(pool.stream(options))
+  assert.deepEqual(codex.accounts, ['default'])
+  data['codex/default'] = windowUsage(97, 60 * 60_000)
+  data['codex/secondary'] = windowUsage(0, 60 * 60_000)
+  usage.invalidate('codex')
+  await collect(pool.stream(options))
+  assert.deepEqual(codex.accounts, ['default', 'secondary'])
+  data['codex/default'] = windowUsage(10, 60 * 60_000)
+  usage.invalidate('codex')
+  await collect(pool.stream(options))
+  assert.deepEqual(codex.accounts, ['default', 'secondary', 'default'])
+})
+
 test('priority: a configured member without an account uses the default account', async () => {
   const codex = new FakeAdapter(() => serveOk('codex'))
   const family = new Map<string, PoolDefinition>([

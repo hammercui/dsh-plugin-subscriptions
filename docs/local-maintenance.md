@@ -5,7 +5,8 @@
 ## 仓库与边界
 
 - 官方仓库：https://github.com/V1ki/dsh-plugin-subscriptions.git，remote 名为 `upstream`。
-- `main` 保持官方历史；`custom/local` 保存本地定制。尚未配置个人远程，未推送。
+- 自有 GitHub Fork：https://github.com/hammercui/dsh-plugin-subscriptions，remote 名为 `origin`；GitHub 已确认 parent 为 `V1ki/dsh-plugin-subscriptions`。
+- `main` 保持官方历史；`custom/local` 保存本地定制并跟踪 `origin/custom/local`。定制提交已推送；不向官方仓库推送。
 - 开发仓库：`D:\DshProject\dsh-plugin-subscriptions`。
 - 不直接修改安装目录，不将账号凭据、个人运行配置、导出包或历史构建目录加入 Git。
 - 配置覆盖与登录态留在 DSH 用户目录；本仓不复制它们。
@@ -25,13 +26,16 @@
 
 ```bash
 git fetch upstream --tags
+git switch main
+git merge --ff-only upstream/main
+git push origin main
 git switch custom/local
 # 默认选择已发布版本；将下面占位值换成经过核实的 tag。
 git merge <release-tag>
 # 若明确决定跟主干，改为 git merge upstream/main
 ```
 
-解决冲突时同时保留官方修复和本地功能；不能整文件取旧版。采用合并提交保留历史，不对已共享分支强推。
+解决冲突时同时保留官方修复和本地功能；不能整文件取旧版。采用合并提交保留历史，不对已共享分支强推。验证后执行 `git push origin custom/local`。本流程为手动按需同步，没有安装定时任务或自动合并工作流。
 
 在获准安装开发依赖后，按 packageManager 指定版本使用 pnpm：
 
@@ -46,6 +50,12 @@ pnpm test
 所有结果应以本轮命令为准；测试通过不代表真实套餐调用或当前宿主兼容性已经验证。
 
 打包与实际安装是独立阶段：检查打包清单不含凭据，保留已安装版本及回退路径，获得安装确认后再替换，重启实际 DSH 并核验加载版本。市场更新可能覆盖定制包，不能把市场自动升级当作本分支升级流程。
+
+## OAuth 默认账号优先（2026-10-23）
+
+普通 OAuth 账号池按请求优先当前合格且健康的默认账号；配额感知模式仅提升配额可用的默认账号。不可用时保留原有备用调度，恢复后即使同一会话也优先默认账号。显式 tier 不增加默认账号查询，独立入口及 Coding Plan 排除规则不变，详见账号管理文档。
+
+新增回归用例覆盖乱序成员、故障冷却与恢复、同会话配额回退与恢复、显式 tier 的直接/预备调用。测试命令 `pnpm test -- pool.spec.ts` 已尝试，但在 TypeScript 阶段因缺少 Node 类型定义（TS2688；新仓库未安装 node_modules）失败，测试未执行；尚未获准安装开发依赖。静态 diff 检查通过不能代替构建和回归。
 
 ## 当前验证边界与风险
 

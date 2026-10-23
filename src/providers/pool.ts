@@ -248,18 +248,22 @@ export class PoolAdapter extends LlmAdapter {
       ...reasoning === undefined ? {} : { reasoning },
       ...modalities === undefined ? {} : { inputModalities: modalities },
     }
-    return { model: info, stream: options => this.streamMembers(options, eligible) }
+    return { model: info, stream: options => this.streamMembers(options, eligible, definition.extra !== true) }
   }
 
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     const definition = (await withAbortSignal(() => this.pools(), options.signal)).get(poolKey(options.provider, options.model))
     if (definition === undefined) throw new LlmError(`unknown pool model "${options.model}"`, 'NO_ADAPTER')
     const members = await withAbortSignal(() => this.concrete(definition.members), options.signal)
-    yield* this.streamMembers(options, members)
+    yield* this.streamMembers(options, members, definition.extra !== true)
   }
 
-  private async *streamMembers(options: GenerateOptions, members: ConcretePoolMember[]): AsyncIterable<StreamChunk> {
-    const candidates = await withAbortSignal(() => this.select(options.model, members, options.sessionId), options.signal)
+  private async *streamMembers(
+    options: GenerateOptions,
+    members: ConcretePoolMember[],
+    preferDefault = false,
+  ): AsyncIterable<StreamChunk> {
+    const candidates = await withAbortSignal(() => this.select(options.model, members, options.sessionId, preferDefault), options.signal)
     if (candidates.length === 0) throw this.exhausted(options.model, members)
     let lastFailure: MemberFailure | undefined
     let tried = 0
@@ -346,22 +350,43 @@ export class PoolAdapter extends LlmAdapter {
    * copilot, score zero and sink to the bottom of their class), while
    * quota-exhausted members stay as a last-resort tail in pool order. The
    * sticky member keeps its lead unless a challenger out-scores it by
-   * `switchMargin`.
+   * `switchMargin`; account pools prefer a currently healthy default member.
    */
   private async select(
     poolId: string,
     members: ConcretePoolMember[],
     sessionId: GenerateOptions['sessionId'],
+    preferDefault: boolean,
   ): Promise<ConcretePoolMember[]> {
     const usable = members.filter(member =>
       this.options.adapters[member.provider] !== undefined
       && this.options.health.isMemberAvailable(member.provider, member.account, member.model))
     if (usable.length === 0) return []
+    // Account catalogs normally arrive with the default first, but pool
+    // membership can be assembled from cached/independent sources whose
+    // ordering is not guaranteed. Re-assert the default preference here so a
+    // recovered default is preferred on the next request, while still
+    // respecting the exact pool membership/model allowlist.
+    const defaults = new Map<ProviderId, string | undefined>()
+    if (preferDefault) {
+      await Promise.all([...new Set(usable.map(member => member.provider))].map(async provider => {
+        defaults.set(provider, await this.options.defaultAccount(provider))
+      }))
+      usable.sort((left, right) => {
+        const leftDefault = defaults.get(left.provider) === left.account
+        const rightDefault = defaults.get(right.provider) === right.account
+        return Number(rightDefault) - Number(leftDefault)
+      })
+    }
+    const defaultMember = preferDefault
+      ? usable.find(member => defaults.get(member.provider) === member.account)
+      : undefined
     const stickyMember = sessionId === undefined
       ? undefined
       : usable.find(member =>
         memberKey(member.provider, member.account, member.model) === this.sticky.get(stickyKey(poolId, sessionId)))
     if (this.options.strategy === 'priority') {
+      if (defaultMember !== undefined) return [defaultMember, ...usable.filter(member => member !== defaultMember)]
       return stickyMember === undefined
         ? usable
         : [stickyMember, ...usable.filter(member => member !== stickyMember)]
@@ -372,7 +397,10 @@ export class PoolAdapter extends LlmAdapter {
     const scored = usable.filter(member => quotas.get(member)?.available === true)
     const quotaFull = usable.filter(member => quotas.get(member)?.available === false)
     scored.sort((a, b) => (quotas.get(b)?.urgency ?? 0) - (quotas.get(a)?.urgency ?? 0))
-    if (stickyMember !== undefined && scored.includes(stickyMember)) {
+    if (defaultMember !== undefined && scored.includes(defaultMember)) {
+      scored.splice(scored.indexOf(defaultMember), 1)
+      scored.unshift(defaultMember)
+    } else if (stickyMember !== undefined && scored.includes(stickyMember)) {
       const best = scored[0]
       const stickyUrgency = quotas.get(stickyMember)?.urgency ?? 0
       const bestUrgency = quotas.get(best)?.urgency ?? 0
